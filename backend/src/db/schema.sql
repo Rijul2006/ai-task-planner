@@ -1,15 +1,32 @@
--- 1. Enable UUID Extension (PostgreSQL feature to generate unique IDs automatically)
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+-- Extensions & Custom Types
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
--- 2. Custom ENUM Types for Fixed Values
-CREATE TYPE task_status AS ENUM ('TODO', 'IN_PROGRESS', 'BLOCKED', 'DONE');
-CREATE TYPE task_priority AS ENUM ('LOW', 'MEDIUM', 'HIGH', 'URGENT');
-CREATE TYPE actor_type AS ENUM ('USER', 'AI_AGENT', 'SYSTEM');
-CREATE TYPE message_role AS ENUM ('user', 'assistant', 'tool');
-CREATE TYPE ai_action_status AS ENUM ('proposed', 'pending_approval', 'approved', 'rejected', 'executed', 'failed');
+DO $$ BEGIN
+    CREATE TYPE task_status AS ENUM ('TODO', 'IN_PROGRESS', 'BLOCKED', 'DONE');
+EXCEPTION WHEN duplicate_object THEN null; END $$;
 
--- 3. Users Table (Stores account information)
-CREATE TABLE users (
+DO $$ BEGIN
+    CREATE TYPE task_priority AS ENUM ('LOW', 'MEDIUM', 'HIGH', 'URGENT');
+EXCEPTION WHEN duplicate_object THEN null; END $$;
+
+DO $$ BEGIN
+    CREATE TYPE board_role AS ENUM ('OWNER', 'MEMBER', 'VIEWER');
+EXCEPTION WHEN duplicate_object THEN null; END $$;
+
+DO $$ BEGIN
+    CREATE TYPE actor_type AS ENUM ('USER', 'AI_AGENT', 'SYSTEM');
+EXCEPTION WHEN duplicate_object THEN null; END $$;
+
+DO $$ BEGIN
+    CREATE TYPE message_role AS ENUM ('user', 'assistant', 'tool');
+EXCEPTION WHEN duplicate_object THEN null; END $$;
+
+DO $$ BEGIN
+    CREATE TYPE ai_action_status AS ENUM ('proposed', 'pending_approval', 'approved', 'rejected', 'executed', 'failed');
+EXCEPTION WHEN duplicate_object THEN null; END $$;
+
+-- 1. Users Table
+CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     email TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
@@ -18,8 +35,8 @@ CREATE TABLE users (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- 4. Sessions Table (Stores user login sessions securely)
-CREATE TABLE sessions (
+-- 2. Sessions Table
+CREATE TABLE IF NOT EXISTS sessions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     token_hash TEXT NOT NULL UNIQUE,
@@ -27,23 +44,29 @@ CREATE TABLE sessions (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_sessions_user_id ON sessions (user_id);
-CREATE INDEX idx_sessions_expires_at ON sessions (expires_at);
-
--- 5. Boards Table (Kanban boards owned by users)
-CREATE TABLE boards (
+-- 3. Boards Table
+CREATE TABLE IF NOT EXISTS boards (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     owner_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
+    description TEXT,
     archived_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_boards_owner_id ON boards (owner_id) WHERE archived_at IS NULL;
+-- 3a. Board Memberships
+CREATE TABLE IF NOT EXISTS board_members (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    board_id UUID NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role board_role NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (board_id, user_id)
+);
 
--- 6. Tasks Table (Core task management domain)
-CREATE TABLE tasks (
+-- 4. Tasks Table
+CREATE TABLE IF NOT EXISTS tasks (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     board_id UUID NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
     title TEXT NOT NULL,
@@ -52,18 +75,13 @@ CREATE TABLE tasks (
     priority task_priority NOT NULL DEFAULT 'MEDIUM',
     due_date DATE,
     assignee_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    completed_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    completed_at TIMESTAMPTZ
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_tasks_board_id ON tasks (board_id);
-CREATE INDEX idx_tasks_assignee_id ON tasks (assignee_id);
-CREATE INDEX idx_tasks_status ON tasks (board_id, status);
-CREATE INDEX idx_tasks_due_date ON tasks (due_date) WHERE status != 'DONE';
-
--- 7. Task Dependencies Table (Task A blocks Task B)
-CREATE TABLE task_dependencies (
+-- 5. Task Dependencies
+CREATE TABLE IF NOT EXISTS task_dependencies (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     blocking_task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
     blocked_task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
@@ -72,75 +90,31 @@ CREATE TABLE task_dependencies (
     CHECK (blocking_task_id != blocked_task_id)
 );
 
-CREATE INDEX idx_deps_blocking ON task_dependencies (blocking_task_id);
-CREATE INDEX idx_deps_blocked ON task_dependencies (blocked_task_id);
-
--- 8. Task Activity Table (Append-only audit log for all mutations)
-CREATE TABLE task_activity (
+-- 6. Task Activity Audit Log
+CREATE TABLE IF NOT EXISTS task_activity (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    task_id UUID REFERENCES tasks(id) ON DELETE SET NULL,
     event TEXT NOT NULL,
     actor_type actor_type NOT NULL,
-    actor_id UUID REFERENCES users(id),
+    actor_id UUID REFERENCES users(id) ON DELETE SET NULL,
     old_value JSONB,
     new_value JSONB,
     reason TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_activity_task_id ON task_activity (task_id, created_at DESC);
-
--- 9. AI Conversations & Messages (Chat history)
-CREATE TABLE ai_conversations (
+-- 7. AI Actions (Human Approval State Machine)
+CREATE TABLE IF NOT EXISTS ai_actions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    board_id UUID NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX idx_ai_conv_board ON ai_conversations (board_id, created_at DESC);
-
-CREATE TABLE ai_messages (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    conversation_id UUID NOT NULL REFERENCES ai_conversations(id) ON DELETE CASCADE,
-    role message_role NOT NULL,
-    content TEXT,
-    tool_calls JSONB,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX idx_ai_messages_conv ON ai_messages (conversation_id, created_at);
-
--- 10. AI Recommendations (Proactive risk analysis persistence)
-CREATE TABLE ai_recommendations (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    board_id UUID NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
-    task_id UUID REFERENCES tasks(id) ON DELETE CASCADE,
-    risk_summary TEXT NOT NULL,
-    evidence JSONB NOT NULL,
-    recommendation TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    dismissed_at TIMESTAMPTZ
-);
-
-CREATE INDEX idx_ai_recs_board ON ai_recommendations (board_id) WHERE dismissed_at IS NULL;
-
--- 11. AI Actions (Human-in-the-loop approval state machine)
-CREATE TABLE ai_actions (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    conversation_id UUID REFERENCES ai_conversations(id) ON DELETE SET NULL,
     task_id UUID REFERENCES tasks(id) ON DELETE CASCADE,
     tool_name TEXT NOT NULL,
     tool_args JSONB NOT NULL,
     reason TEXT NOT NULL,
     status ai_action_status NOT NULL DEFAULT 'pending_approval',
-    requested_by UUID REFERENCES users(id),
-    decided_by UUID REFERENCES users(id),
+    requested_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    decided_by UUID REFERENCES users(id) ON DELETE SET NULL,
     decided_at TIMESTAMPTZ,
     executed_at TIMESTAMPTZ,
     error TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-
-CREATE INDEX idx_ai_actions_status ON ai_actions (status);
-CREATE INDEX idx_ai_actions_task ON ai_actions (task_id);

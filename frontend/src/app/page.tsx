@@ -12,7 +12,12 @@ import CreateBoardModal from '../components/CreateBoardModal';
 import BoardSettingsModal from '../components/BoardSettingsModal';
 import TaskModal from '../components/TaskModal';
 import { ChatMessage, Priority, Task, TaskStatus, User } from '../types';
-import { useUserBoards, useBoardTasks } from '../hooks/useBoardData';
+import {
+  boardTasksQueryKey,
+  useUserBoards,
+  useBoardTasks,
+  userBoardsQueryKey,
+} from '../hooks/useBoardData';
 import { useApproveAction, useRejectAction } from '../hooks/useAIActions';
 import { api } from '../lib/api';
 import { ShieldAlert } from 'lucide-react';
@@ -46,6 +51,7 @@ export default function TPMDashboard() {
           },
         ]);
       } catch {
+        queryClient.clear();
         router.push('/login');
       } finally {
         setAuthLoading(false);
@@ -53,18 +59,18 @@ export default function TPMDashboard() {
     };
 
     fetchSession();
-  }, [router]);
+  }, [queryClient, router]);
 
   // 2. Fetch Active Boards
-  const { data: boards = [] } = useUserBoards();
+  const { data: boards = [] } = useUserBoards(currentUser?.id);
   const activeBoard = boards.find((board: any) => board.id === selectedBoardId) || boards[0];
   const currentBoardId = activeBoard?.id || '';
   const currentBoardName = activeBoard?.name || 'Program Workspace';
   const canEditTasks = activeBoard?.role === 'OWNER' || activeBoard?.role === 'MEMBER';
 
   // 3. Fetch Tasks linked to the current active board
-  const { data: boardTasks = [], isLoading: tasksLoading } = useBoardTasks(currentBoardId);
-  const approveMutation = useApproveAction(currentBoardId);
+  const { data: boardTasks = [], isLoading: tasksLoading } = useBoardTasks(currentUser?.id, currentBoardId);
+  const approveMutation = useApproveAction(currentUser?.id, currentBoardId);
   const rejectMutation = useRejectAction();
 
   // Robust Task Creation Handler
@@ -92,7 +98,10 @@ export default function TPMDashboard() {
         status: newTaskData.status || 'TODO',
       });
 
-      await queryClient.invalidateQueries({ queryKey: ['tasks', targetBoardId], exact: true });
+      await queryClient.invalidateQueries({
+        queryKey: boardTasksQueryKey(currentUser?.id, targetBoardId),
+        exact: true,
+      });
       setIsModalOpen(false);
     } catch (err: any) {
       console.error('Task Submission Error:', err);
@@ -104,29 +113,43 @@ export default function TPMDashboard() {
   const handleLogout = async () => {
     try {
       await api.post('/auth/logout');
-    } catch {}
+    } catch (err) {
+      console.error('Logout failed:', err);
+    } finally {
+      queryClient.clear();
+      setCurrentUser(null);
+    }
     router.push('/login');
   };
 
   const handleBoardCreated = (board: { id: string }) => {
-    queryClient.invalidateQueries({ queryKey: ['userBoards'] });
+    queryClient.invalidateQueries({ queryKey: userBoardsQueryKey(currentUser?.id) });
     setSelectedBoardId(board.id);
   };
 
   const handleBoardDeleted = () => {
-    queryClient.invalidateQueries({ queryKey: ['userBoards'] });
-    queryClient.removeQueries({ queryKey: ['tasks', currentBoardId], exact: true });
+    queryClient.invalidateQueries({ queryKey: userBoardsQueryKey(currentUser?.id) });
+    queryClient.removeQueries({
+      queryKey: boardTasksQueryKey(currentUser?.id, currentBoardId),
+      exact: true,
+    });
     setSelectedBoardId('');
   };
 
   const handleTaskSave = async (taskId: string, updates: Partial<Task>) => {
     await api.patch(`/tasks/${taskId}`, updates);
-    await queryClient.invalidateQueries({ queryKey: ['tasks', currentBoardId], exact: true });
+    await queryClient.invalidateQueries({
+      queryKey: boardTasksQueryKey(currentUser?.id, currentBoardId),
+      exact: true,
+    });
   };
 
   const handleTaskDelete = async (taskId: string) => {
     await api.delete(`/tasks/${taskId}`);
-    await queryClient.invalidateQueries({ queryKey: ['tasks', currentBoardId], exact: true });
+    await queryClient.invalidateQueries({
+      queryKey: boardTasksQueryKey(currentUser?.id, currentBoardId),
+      exact: true,
+    });
   };
 
   const handleSendMessage = async (text: string) => {
@@ -180,7 +203,10 @@ export default function TPMDashboard() {
               : m
           )
         );
-        queryClient.invalidateQueries({ queryKey: ['tasks', currentBoardId], exact: true });
+        queryClient.invalidateQueries({
+          queryKey: boardTasksQueryKey(currentUser?.id, currentBoardId),
+          exact: true,
+        });
       },
     });
   };
@@ -295,7 +321,7 @@ export default function TPMDashboard() {
           board={activeBoard}
           isOpen={isBoardSettingsOpen}
           onClose={() => setIsBoardSettingsOpen(false)}
-          onBoardUpdated={() => queryClient.invalidateQueries({ queryKey: ['userBoards'] })}
+          onBoardUpdated={() => queryClient.invalidateQueries({ queryKey: userBoardsQueryKey(currentUser?.id) })}
           onBoardDeleted={handleBoardDeleted}
         />
       )}

@@ -2,30 +2,33 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
 import { Task } from '../types';
 
-export const useUserBoards = () => {
+export const userBoardsQueryKey = (userId: string | undefined) => ['userBoards', userId] as const;
+export const boardTasksQueryKey = (userId: string | undefined, boardId: string) =>
+  ['tasks', userId, boardId] as const;
+
+export const useUserBoards = (userId: string | undefined) => {
   return useQuery({
-    queryKey: ['userBoards'],
+    queryKey: userBoardsQueryKey(userId),
     queryFn: async () => {
       const res = await api.get('/boards');
-      // Fix: Handle both backend wrapper standard formats safely
       return res.data?.data?.boards || res.data?.boards || [];
     },
+    enabled: !!userId,
   });
 };
 
-export const useBoardTasks = (boardId: string) => {
+export const useBoardTasks = (userId: string | undefined, boardId: string) => {
   return useQuery({
-    queryKey: ['tasks', boardId],
+    queryKey: boardTasksQueryKey(userId, boardId),
     queryFn: async () => {
-      if (!boardId) return [];
       const res = await api.get(`/boards/${boardId}/tasks`);
       return (res.data?.data?.tasks || res.data?.tasks || []) as Task[];
     },
-    enabled: !!boardId,
+    enabled: !!userId && !!boardId,
   });
 };
 
-export const useCreateTask = (boardId: string) => {
+export const useCreateTask = (userId: string | undefined, boardId: string) => {
   const queryClient = useQueryClient();
 
   return useMutation({
@@ -34,7 +37,7 @@ export const useCreateTask = (boardId: string) => {
       return res.data?.data?.task || res.data?.task;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['tasks', boardId] });
+      queryClient.invalidateQueries({ queryKey: boardTasksQueryKey(userId, boardId) });
     },
   });
 };

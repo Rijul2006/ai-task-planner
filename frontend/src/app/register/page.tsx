@@ -2,11 +2,13 @@
 
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { useQueryClient } from '@tanstack/react-query';
 import { Bot, UserPlus } from 'lucide-react';
 import { api } from '../../lib/api';
 
 export default function RegisterPage() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const [displayName, setDisplayName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -20,6 +22,7 @@ export default function RegisterPage() {
 
     try {
       await api.post('/auth/register', { displayName, email, password });
+      queryClient.clear();
       router.push('/');
     } catch (err: any) {
       setError(err.response?.data?.message || 'Registration failed');

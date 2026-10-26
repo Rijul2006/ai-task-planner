@@ -1,7 +1,8 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
+import { boardTasksQueryKey } from './useBoardData';
 
-export const useApproveAction = (boardId: string) => {
+export const useApproveAction = (userId: string | undefined, boardId: string) => {
   const queryClient = useQueryClient();
 
   return useMutation({
@@ -10,7 +11,7 @@ export const useApproveAction = (boardId: string) => {
       return res.data.data;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['tasks', boardId] });
+      queryClient.invalidateQueries({ queryKey: boardTasksQueryKey(userId, boardId) });
     },
   });
 };

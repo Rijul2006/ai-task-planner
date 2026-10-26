@@ -2,11 +2,13 @@
 
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { useQueryClient } from '@tanstack/react-query';
 import { Bot, LogIn } from 'lucide-react';
 import { api } from '../../lib/api';
 
 export default function LoginPage() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -19,6 +21,7 @@ export default function LoginPage() {
 
     try {
       await api.post('/auth/login', { email, password });
+      queryClient.clear();
 
       // Redirect to main dashboard
       router.push('/');
